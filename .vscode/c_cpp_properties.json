@@ -10,6 +10,9 @@
             "includePath": [
                 "/home/vihanga/Desktop/se_project/include",
                 "/home/vihanga/Desktop/se_project/src",
+                "/home/vihanga/.platformio/packages/framework-arduinoespressif32/libraries/WiFi/src",
+                "/home/vihanga/Desktop/se_project/.pio/libdeps/esp32dev/ArduinoJson/src",
+                "/home/vihanga/Desktop/se_project/.pio/libdeps/esp32dev/PubSubClient/src",
                 "/home/vihanga/Desktop/se_project/.pio/libdeps/esp32dev/VL53L0X",
                 "/home/vihanga/.platformio/packages/framework-arduinoespressif32/libraries/Wire/src",
                 "/home/vihanga/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32/include/newlib/platform_include",
@@ -237,7 +240,6 @@
                 "/home/vihanga/.platformio/packages/framework-arduinoespressif32/libraries/USB/src",
                 "/home/vihanga/.platformio/packages/framework-arduinoespressif32/libraries/Update/src",
                 "/home/vihanga/.platformio/packages/framework-arduinoespressif32/libraries/WebServer/src",
-                "/home/vihanga/.platformio/packages/framework-arduinoespressif32/libraries/WiFi/src",
                 "/home/vihanga/.platformio/packages/framework-arduinoespressif32/libraries/WiFiClientSecure/src",
                 "/home/vihanga/.platformio/packages/framework-arduinoespressif32/libraries/WiFiProv/src",
                 ""
@@ -247,6 +249,9 @@
                 "path": [
                     "/home/vihanga/Desktop/se_project/include",
                     "/home/vihanga/Desktop/se_project/src",
+                    "/home/vihanga/.platformio/packages/framework-arduinoespressif32/libraries/WiFi/src",
+                    "/home/vihanga/Desktop/se_project/.pio/libdeps/esp32dev/ArduinoJson/src",
+                    "/home/vihanga/Desktop/se_project/.pio/libdeps/esp32dev/PubSubClient/src",
                     "/home/vihanga/Desktop/se_project/.pio/libdeps/esp32dev/VL53L0X",
                     "/home/vihanga/.platformio/packages/framework-arduinoespressif32/libraries/Wire/src",
                     "/home/vihanga/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32/include/newlib/platform_include",
@@ -474,7 +479,6 @@
                     "/home/vihanga/.platformio/packages/framework-arduinoespressif32/libraries/USB/src",
                     "/home/vihanga/.platformio/packages/framework-arduinoespressif32/libraries/Update/src",
                     "/home/vihanga/.platformio/packages/framework-arduinoespressif32/libraries/WebServer/src",
-                    "/home/vihanga/.platformio/packages/framework-arduinoespressif32/libraries/WiFi/src",
                     "/home/vihanga/.platformio/packages/framework-arduinoespressif32/libraries/WiFiClientSecure/src",
                     "/home/vihanga/.platformio/packages/framework-arduinoespressif32/libraries/WiFiProv/src",
                     ""

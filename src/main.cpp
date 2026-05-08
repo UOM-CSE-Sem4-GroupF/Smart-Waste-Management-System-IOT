@@ -1,27 +1,307 @@
 #include <Arduino.h>
 #include <Wire.h>
 #include <VL53L0X.h>
+#include <WiFi.h>
+#include <PubSubClient.h>
+#include <ArduinoJson.h>
+#include <time.h>
+#include <esp_system.h>
 
+// ============ GPIO & Sensor Configuration ============
 constexpr uint8_t SENSOR1_XSHUT = 16;
 constexpr uint8_t SENSOR2_XSHUT = 17;
 constexpr uint8_t SENSOR1_ADDR = 0x30;
 constexpr uint8_t SENSOR2_ADDR = 0x31;
 constexpr uint8_t LED_PIN = 2;
+constexpr uint8_t BATTERY_ADC_PIN = 34; // ADC pin for battery voltage
+
+// ============ Sensor Recovery Configuration ============
 constexpr int MAX_RECOVER_ATTEMPTS = 5;
 constexpr int RECOVER_DELAY_MS = 200;
 constexpr int MAX_CONSECUTIVE_FAILURES = 3;
 
+// ============ Bin Configuration ============
+constexpr const char *BIN_ID = "BIN-EDGE-001";
+constexpr uint8_t ZONE_ID = 1;
+constexpr const char *WASTE_CATEGORY = "general"; // food_waste, general, paper, plastic, glass
+constexpr uint16_t BIN_VOLUME_LITRES = 240;
+constexpr const char *FIRMWARE_VERSION = "2.1.4";
+
+// ============ WiFi & MQTT Configuration ============
+const char *WIFI_SSID = "your_ssid";          // TODO: Configure WiFi
+const char *WIFI_PASSWORD = "your_password";  // TODO: Configure WiFi
+const char *MQTT_BROKER = "mqtt.example.com"; // TODO: Configure MQTT
+constexpr uint16_t MQTT_PORT = 1883;
+const char *MQTT_USER = "sensor-device";       // TODO: Configure MQTT user
+const char *MQTT_PASSWORD = "swms-sensor-dev"; // TODO: Configure MQTT password
+const char *MQTT_TOPIC_PREFIX = "sensors";
+
+// ============ Sensor Objects ============
 VL53L0X sensor1;
 VL53L0X sensor2;
 
+// ============ Sensor State ============
 int sensor1Failures = 0;
 int sensor2Failures = 0;
+
+// ============ WiFi & MQTT Objects ============
+WiFiClient espClient;
+PubSubClient mqttClient(espClient);
+
+// ============ Telemetry State ============
+float currentFillPercentage = 0.0;
+float batteryPercentage = 100.0;
+int signalStrengthDbm = -70;
+float temperatureCelsius = 25.0;
+
+const char *resetReasonToString(esp_reset_reason_t reason)
+{
+  switch (reason)
+  {
+  case ESP_RST_POWERON:
+    return "POWERON";
+  case ESP_RST_EXT:
+    return "EXT";
+  case ESP_RST_SW:
+    return "SW";
+  case ESP_RST_PANIC:
+    return "PANIC";
+  case ESP_RST_INT_WDT:
+    return "INT_WDT";
+  case ESP_RST_TASK_WDT:
+    return "TASK_WDT";
+  case ESP_RST_WDT:
+    return "WDT";
+  case ESP_RST_DEEPSLEEP:
+    return "DEEPSLEEP";
+  case ESP_RST_BROWNOUT:
+    return "BROWNOUT";
+  case ESP_RST_SDIO:
+    return "SDIO";
+  default:
+    return "UNKNOWN";
+  }
+}
 
 void resetI2CBus()
 {
   Wire.end();
   delay(10);
   Wire.begin();
+}
+
+// ============ WiFi Functions ============
+void connectToWiFi()
+{
+  Serial.print("Connecting to WiFi: ");
+  Serial.println(WIFI_SSID);
+
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+
+  int retries = 0;
+  while (WiFi.status() != WL_CONNECTED && retries < 20)
+  {
+    delay(500);
+    Serial.print(".");
+    retries++;
+  }
+
+  if (WiFi.status() == WL_CONNECTED)
+  {
+    Serial.println("\nWiFi connected!");
+    Serial.print("IP address: ");
+    Serial.println(WiFi.localIP());
+  }
+  else
+  {
+    Serial.println("\nFailed to connect to WiFi");
+  }
+}
+
+void reconnectWiFi()
+{
+  if (WiFi.status() != WL_CONNECTED)
+  {
+    Serial.println("WiFi disconnected. Reconnecting...");
+    connectToWiFi();
+  }
+}
+
+// ============ MQTT Functions ============
+void onMqttConnect()
+{
+  Serial.print("MQTT connected to ");
+  Serial.print(MQTT_BROKER);
+  Serial.print(":");
+  Serial.println(MQTT_PORT);
+}
+
+void mqttCallback(char *topic, byte *payload, unsigned int length)
+{
+  Serial.print("Message arrived on topic: ");
+  Serial.println(topic);
+}
+
+void connectToMQTT()
+{
+  Serial.print("Connecting to MQTT broker: ");
+  Serial.print(MQTT_BROKER);
+  Serial.print(":");
+  Serial.println(MQTT_PORT);
+
+  mqttClient.setServer(MQTT_BROKER, MQTT_PORT);
+  mqttClient.setCallback(mqttCallback);
+
+  int retries = 0;
+  while (!mqttClient.connected() && retries < 5)
+  {
+    if (mqttClient.connect(BIN_ID, MQTT_USER, MQTT_PASSWORD))
+    {
+      onMqttConnect();
+      return;
+    }
+    delay(1000);
+    retries++;
+  }
+
+  if (!mqttClient.connected())
+  {
+    Serial.println("MQTT connection failed");
+  }
+}
+
+void reconnectMQTT()
+{
+  if (!mqttClient.connected())
+  {
+    Serial.println("MQTT disconnected. Reconnecting...");
+    connectToMQTT();
+  }
+}
+
+// ============ Sensor Reading & Telemetry Functions ============
+uint16_t getAverageDistance()
+{
+  // Read both sensors and return average for more stable fill level
+  uint16_t dist1 = sensor1.readRangeContinuousMillimeters();
+  uint16_t dist2 = sensor2.readRangeContinuousMillimeters();
+
+  // Handle sensor failures (65535 = timeout, 0 = invalid)
+  if (dist1 == 65535 || dist1 == 0)
+    dist1 = dist2;
+  if (dist2 == 65535 || dist2 == 0)
+    dist2 = dist1;
+
+  // If both are valid, average them
+  if (dist1 != 65535 && dist2 != 65535 && dist1 != 0 && dist2 != 0)
+  {
+    return (dist1 + dist2) / 2;
+  }
+
+  // Return whichever is valid
+  return (dist1 != 65535 && dist1 != 0) ? dist1 : dist2;
+}
+
+float calculateFillPercentage(uint16_t distanceMm)
+{
+  // TODO: Calibrate these values based on your bin dimensions
+  // For now: assume 0mm (full) = 0% and 240mm (empty) = 100%
+  const uint16_t EMPTY_DISTANCE_MM = 240; // distance when bin is empty
+  const uint16_t FULL_DISTANCE_MM = 0;    // distance when bin is full
+
+  if (distanceMm >= EMPTY_DISTANCE_MM)
+    return 0.0; // Empty
+  if (distanceMm <= FULL_DISTANCE_MM)
+    return 100.0; // Full
+
+  float fillPct = 100.0 * (EMPTY_DISTANCE_MM - distanceMm) / (EMPTY_DISTANCE_MM - FULL_DISTANCE_MM);
+  return constrain(fillPct, 0.0, 100.0);
+}
+
+float readBatteryPercentage()
+{
+  // TODO: Replace with actual battery voltage ADC reading
+  // For now return a simulated value
+  static float fakeBattery = 95.0;
+  fakeBattery -= random(0, 5) * 0.001; // Slow drain
+  if (fakeBattery < 15.0)
+    fakeBattery = 95.0; // Simulate replacement
+  return constrain(fakeBattery, 0.0, 100.0);
+}
+
+float readTemperature()
+{
+  // TODO: Replace with actual temperature sensor reading (e.g., DHT22, BMP280)
+  // For now return a simulated value with time-of-day variation
+  int hour = 12;                                       // TODO: Get actual time from NTP
+  float baseTemp = 22.0 + 8.0 * abs(hour - 14) / 14.0; // peaks at 14:00
+  float temp = baseTemp + random(-50, 50) * 0.1;       // ±5°C noise
+  return constrain(temp, 15.0, 45.0);
+}
+
+int getSignalStrength()
+{
+  // Get WiFi RSSI (signal strength in dBm)
+  return WiFi.RSSI();
+}
+
+// ============ Adaptive Sleep Cycle ============
+uint32_t calculatePublishIntervalMs(float fillPercentage)
+{
+  // Based on simulator: adaptive sleep reduces power drain when bin is mostly empty
+  // Returns milliseconds to sleep before next publish
+
+  if (fillPercentage < 50.0)
+    return 600000; // 10 minutes
+  else if (fillPercentage < 75.0)
+    return 300000; // 5 minutes
+  else if (fillPercentage < 90.0)
+    return 120000; // 2 minutes
+  else
+    return 30000; // 30 seconds (urgent)
+}
+
+// ============ Telemetry Publishing ============
+void publishTelemetry()
+{
+  // Read current sensor data
+  uint16_t distanceMm = getAverageDistance();
+  currentFillPercentage = calculateFillPercentage(distanceMm);
+  batteryPercentage = readBatteryPercentage();
+  temperatureCelsius = readTemperature();
+  signalStrengthDbm = getSignalStrength();
+
+  // Create JSON payload matching simulator format
+  DynamicJsonDocument doc(512);
+  doc["bin_id"] = BIN_ID;
+  doc["fill_level_pct"] = round(currentFillPercentage * 100.0) / 100.0;
+  doc["battery_level_pct"] = round(batteryPercentage * 10.0) / 10.0;
+  doc["signal_strength_dbm"] = signalStrengthDbm;
+  doc["temperature_c"] = round(temperatureCelsius * 10.0) / 10.0;
+
+  // TODO: Replace with actual NTP timestamp
+  doc["timestamp"] = "2026-05-08T00:00:00Z";
+
+  doc["firmware_version"] = FIRMWARE_VERSION;
+  doc["error_flags"] = 0; // TODO: Add error detection logic
+
+  // Serialize and publish
+  String payload;
+  serializeJson(doc, payload);
+
+  String topic = String(MQTT_TOPIC_PREFIX) + "/bin/" + BIN_ID + "/telemetry";
+
+  if (mqttClient.publish(topic.c_str(), payload.c_str(), true))
+  {
+    Serial.print("Published: ");
+    Serial.print(topic);
+    Serial.print(" = ");
+    Serial.println(payload);
+  }
+  else
+  {
+    Serial.println("Failed to publish telemetry");
+  }
 }
 
 void configureSensor(VL53L0X &sensor, uint8_t xshutPin, uint8_t address)
@@ -144,11 +424,21 @@ void printAndMaybeRecover(VL53L0X &sensor, uint8_t xshutPin, uint8_t address, co
 void setup()
 {
   Serial.begin(115200);
+  delay(1000);
+  Serial.println("\n\n=== SWMS Edge Device Starting ===\n");
+  esp_reset_reason_t reason = esp_reset_reason();
+  Serial.print("Reset reason: ");
+  Serial.print(static_cast<int>(reason));
+  Serial.print(" (");
+  Serial.print(resetReasonToString(reason));
+  Serial.println(")");
+
   Wire.begin();
 
   pinMode(SENSOR1_XSHUT, OUTPUT);
   pinMode(SENSOR2_XSHUT, OUTPUT);
   pinMode(LED_PIN, OUTPUT);
+  pinMode(BATTERY_ADC_PIN, INPUT);
 
   digitalWrite(SENSOR1_XSHUT, LOW);
   digitalWrite(SENSOR2_XSHUT, LOW);
@@ -158,13 +448,39 @@ void setup()
   configureSensor(sensor2, SENSOR2_XSHUT, SENSOR2_ADDR);
 
   Serial.println("Two ToF sensors initialized.");
+
+  connectToWiFi();
+
+  connectToMQTT();
+
+  Serial.println("Setup complete!\n");
 }
 
 void loop()
 {
+  reconnectWiFi();
+
+  if (!mqttClient.connected())
+  {
+    reconnectMQTT();
+  }
+  mqttClient.loop();
+
   printAndMaybeRecover(sensor1, SENSOR1_XSHUT, SENSOR1_ADDR, "Sensor 1: ", sensor1Failures);
   printAndMaybeRecover(sensor2, SENSOR2_XSHUT, SENSOR2_ADDR, "Sensor 2: ", sensor2Failures);
 
+  publishTelemetry();
+
+  uint32_t sleepMs = calculatePublishIntervalMs(currentFillPercentage);
+
+  Serial.print("Fill: ");
+  Serial.print(currentFillPercentage, 1);
+  Serial.print("% | Battery: ");
+  Serial.print(batteryPercentage, 1);
+  Serial.print("% | Next publish in ");
+  Serial.print(sleepMs / 1000);
+  Serial.println("s");
   Serial.println("---");
-  delay(200);
+
+  delay(sleepMs);
 }
