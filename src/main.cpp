@@ -6,6 +6,12 @@
 #include <ArduinoJson.h>
 #include <time.h>
 #include <esp_system.h>
+// Try to include user config if present
+#if defined(__has_include)
+#if __has_include("config.h")
+#include "config.h"
+#endif
+#endif
 
 // ============ GPIO & Sensor Configuration ============
 constexpr uint8_t SENSOR1_XSHUT = 16;
@@ -28,8 +34,8 @@ constexpr uint16_t BIN_VOLUME_LITRES = 240;
 constexpr const char *FIRMWARE_VERSION = "2.1.4";
 
 // ============ WiFi & MQTT Configuration ============
-const char *WIFI_SSID = "your_ssid";          // TODO: Configure WiFi
-const char *WIFI_PASSWORD = "your_password";  // TODO: Configure WiFi
+const char *WIFI_SSID = "ZTE Blade V50 Design";
+const char *WIFI_PASSWORD = "102938asdf";
 const char *MQTT_BROKER = "mqtt.example.com"; // TODO: Configure MQTT
 constexpr uint16_t MQTT_PORT = 1883;
 const char *MQTT_USER = "sensor-device";       // TODO: Configure MQTT user
@@ -53,6 +59,19 @@ float currentFillPercentage = 0.0;
 float batteryPercentage = 100.0;
 int signalStrengthDbm = -70;
 float temperatureCelsius = 25.0;
+
+// NTP defaults (overridable via include/config.h -> #define NTP_SERVER "..." and #define UTC_OFFSET <hours>)
+#ifndef NTP_SERVER
+static const char *NTP_SERVER_STR = "pool.ntp.org";
+#else
+static const char *NTP_SERVER_STR = NTP_SERVER;
+#endif
+
+#ifndef UTC_OFFSET
+static const double UTC_OFFSET_HOURS = 0.0;
+#else
+static const double UTC_OFFSET_HOURS = UTC_OFFSET;
+#endif
 
 const char *resetReasonToString(esp_reset_reason_t reason)
 {
@@ -80,6 +99,48 @@ const char *resetReasonToString(esp_reset_reason_t reason)
     return "SDIO";
   default:
     return "UNKNOWN";
+  }
+}
+
+String getIsoUtcTimestamp()
+{
+  time_t now = time(nullptr);
+  struct tm tmstruct;
+  gmtime_r(&now, &tmstruct);
+  char buf[32];
+  strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%SZ", &tmstruct);
+  return String(buf);
+}
+
+void syncTimeWithNtp()
+{
+  Serial.print("Configuring NTP: ");
+  Serial.println(NTP_SERVER_STR);
+  long gmtOffsetSec = (long)(UTC_OFFSET_HOURS * 3600);
+  configTime(gmtOffsetSec, 0, NTP_SERVER_STR);
+
+  Serial.print("Waiting for NTP sync...");
+  time_t now = time(nullptr);
+  int attempts = 0;
+  while (now < 24 * 3600 && attempts < 10)
+  {
+    delay(1000);
+    Serial.print('.');
+    now = time(nullptr);
+    attempts++;
+  }
+  Serial.println();
+  if (now < 24 * 3600)
+  {
+    Serial.println("NTP sync failed or time not yet set");
+  }
+  else
+  {
+    Serial.println("NTP time synchronized");
+    // Print the current ISO8601 UTC timestamp to the serial monitor
+    String iso = getIsoUtcTimestamp();
+    Serial.print("Current UTC time: ");
+    Serial.println(iso);
   }
 }
 
@@ -450,6 +511,9 @@ void setup()
   Serial.println("Two ToF sensors initialized.");
 
   connectToWiFi();
+
+  // Perform NTP sync after WiFi connects so telemetry timestamps are accurate
+  syncTimeWithNtp();
 
   connectToMQTT();
 
