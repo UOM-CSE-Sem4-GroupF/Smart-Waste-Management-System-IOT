@@ -37,6 +37,8 @@
 #define SENSOR2_ADDR 0x31
 #define LED_PIN 2
 #define BATTERY_ADC_PIN 34 // ESP32 ADC pin for battery voltage
+#define DHT_PIN 4          // GPIO used for DHT22 data line (change if needed)
+#define DHT_TYPE DHT22     // DHT11 or DHT22
 
 // ============ Battery Calibration ============
 // Update these values based on your battery module ADC readings

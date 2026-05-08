@@ -6,6 +6,7 @@
 #include <ArduinoJson.h>
 #include <time.h>
 #include <esp_system.h>
+#include <DHT.h>
 // Try to include user config if present
 #if defined(__has_include)
 #if __has_include("config.h")
@@ -20,6 +21,17 @@ constexpr uint8_t SENSOR1_ADDR = 0x30;
 constexpr uint8_t SENSOR2_ADDR = 0x31;
 constexpr uint8_t LED_PIN = 2;
 constexpr uint8_t BATTERY_ADC_PIN = 34; // ADC pin for battery voltage
+#ifndef DHT_PIN
+constexpr uint8_t DHT_SENSOR_PIN = 4; // fallback pin if not provided by config.h
+#else
+constexpr uint8_t DHT_SENSOR_PIN = DHT_PIN;
+#endif
+
+#ifndef DHT_TYPE
+#define DHT_TYPE DHT22
+#endif
+
+DHT dht(DHT_SENSOR_PIN, DHT_TYPE);
 
 // ============ Sensor Recovery Configuration ============
 constexpr int MAX_RECOVER_ATTEMPTS = 5;
@@ -292,12 +304,16 @@ float readBatteryPercentage()
 
 float readTemperature()
 {
-  // TODO: Replace with actual temperature sensor reading (e.g., DHT22, BMP280)
-  // For now return a simulated value with time-of-day variation
-  int hour = 12;                                       // TODO: Get actual time from NTP
-  float baseTemp = 22.0 + 8.0 * abs(hour - 14) / 14.0; // peaks at 14:00
-  float temp = baseTemp + random(-50, 50) * 0.1;       // ±5°C noise
-  return constrain(temp, 15.0, 45.0);
+  // Use DHT sensor to read temperature (Celsius)
+  float t = dht.readTemperature();
+  if (isnan(t))
+  {
+    // preserve previous value if read failed
+    Serial.println("DHT read failed, keeping previous temperature");
+    return temperatureCelsius;
+  }
+  temperatureCelsius = t;
+  return temperatureCelsius;
 }
 
 int getSignalStrength()
@@ -511,6 +527,9 @@ void setup()
   Serial.println("Two ToF sensors initialized.");
 
   connectToWiFi();
+
+  // Initialize DHT sensor
+  dht.begin();
 
   // Perform NTP sync after WiFi connects so telemetry timestamps are accurate
   syncTimeWithNtp();
