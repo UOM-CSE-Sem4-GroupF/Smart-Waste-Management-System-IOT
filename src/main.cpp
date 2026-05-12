@@ -7,6 +7,7 @@
 #include <time.h>
 #include <esp_system.h>
 #include <DHT.h>
+#include <INA226_WE.h>
 // Try to include user config if present
 #if defined(__has_include)
 #if __has_include("config.h")
@@ -20,7 +21,13 @@ constexpr uint8_t SENSOR2_XSHUT = 17;
 constexpr uint8_t SENSOR1_ADDR = 0x30;
 constexpr uint8_t SENSOR2_ADDR = 0x31;
 constexpr uint8_t LED_PIN = 2;
-constexpr uint8_t BATTERY_ADC_PIN = 34; // ADC pin for battery voltage
+
+// ============ INA226 Configuration ============
+constexpr uint8_t INA226_I2C_ADDR = 0x40;  // A0=GND, A1=GND (default)
+constexpr float SHUNT_RESISTOR_OHM = 0.1f; // 100 mΩ shunt resistor
+constexpr float MAX_EXPECTED_CURRENT_A = 1.0f;
+constexpr float BATTERY_FULL_V = 4.2f;  // 3.7V LiPo fully charged
+constexpr float BATTERY_EMPTY_V = 3.0f; // cut-off voltage
 #ifndef DHT_PIN
 constexpr uint8_t DHT_SENSOR_PIN = 4; // fallback pin if not provided by config.h
 #else
@@ -57,6 +64,7 @@ const char *MQTT_TOPIC_PREFIX = "sensors";
 // ============ Sensor Objects ============
 VL53L0X sensor1;
 VL53L0X sensor2;
+INA226_WE ina226(INA226_I2C_ADDR);
 
 // ============ Sensor State ============
 int sensor1Failures = 0;
@@ -69,6 +77,8 @@ PubSubClient mqttClient(espClient);
 // ============ Telemetry State ============
 float currentFillPercentage = 0.0;
 float batteryPercentage = 100.0;
+float batteryVoltageV = 3.7f;
+float batteryCurrentMa = 0.0f;
 int signalStrengthDbm = -70;
 float temperatureCelsius = 25.0;
 
@@ -293,13 +303,10 @@ float calculateFillPercentage(uint16_t distanceMm)
 
 float readBatteryPercentage()
 {
-  // TODO: Replace with actual battery voltage ADC reading
-  // For now return a simulated value
-  static float fakeBattery = 95.0;
-  fakeBattery -= random(0, 5) * 0.001; // Slow drain
-  if (fakeBattery < 15.0)
-    fakeBattery = 95.0; // Simulate replacement
-  return constrain(fakeBattery, 0.0, 100.0);
+  batteryVoltageV = ina226.getBusVoltage_V();
+  batteryCurrentMa = ina226.getCurrent_mA();
+  float pct = (batteryVoltageV - BATTERY_EMPTY_V) / (BATTERY_FULL_V - BATTERY_EMPTY_V) * 100.0f;
+  return constrain(pct, 0.0f, 100.0f);
 }
 
 float readTemperature()
@@ -353,11 +360,11 @@ void publishTelemetry()
   doc["bin_id"] = BIN_ID;
   doc["fill_level_pct"] = round(currentFillPercentage * 100.0) / 100.0;
   doc["battery_level_pct"] = round(batteryPercentage * 10.0) / 10.0;
+  doc["battery_voltage_v"] = round(batteryVoltageV * 100.0) / 100.0;
+  doc["battery_current_ma"] = round(batteryCurrentMa * 10.0) / 10.0;
   doc["signal_strength_dbm"] = signalStrengthDbm;
   doc["temperature_c"] = round(temperatureCelsius * 10.0) / 10.0;
-
-  // TODO: Replace with actual NTP timestamp
-  doc["timestamp"] = "2026-05-08T00:00:00Z";
+  doc["timestamp"] = getIsoUtcTimestamp();
 
   doc["firmware_version"] = FIRMWARE_VERSION;
   doc["error_flags"] = 0; // TODO: Add error detection logic
@@ -515,7 +522,6 @@ void setup()
   pinMode(SENSOR1_XSHUT, OUTPUT);
   pinMode(SENSOR2_XSHUT, OUTPUT);
   pinMode(LED_PIN, OUTPUT);
-  pinMode(BATTERY_ADC_PIN, INPUT);
 
   digitalWrite(SENSOR1_XSHUT, LOW);
   digitalWrite(SENSOR2_XSHUT, LOW);
@@ -530,6 +536,20 @@ void setup()
 
   // Initialize DHT sensor
   dht.begin();
+
+  // Initialize INA226 power monitor
+  if (!ina226.init())
+  {
+    Serial.println("INA226 init failed! Check wiring and I2C address.");
+  }
+  else
+  {
+    ina226.setResistorRange(SHUNT_RESISTOR_OHM, MAX_EXPECTED_CURRENT_A);
+    ina226.setAverage(INA226_AVERAGE_16);
+    ina226.setConversionTime(INA226_CONV_TIME_1100, INA226_CONV_TIME_1100);
+    ina226.setMeasureMode(INA226_CONTINUOUS);
+    Serial.println("INA226 initialized.");
+  }
 
   // Perform NTP sync after WiFi connects so telemetry timestamps are accurate
   syncTimeWithNtp();
