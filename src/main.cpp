@@ -16,8 +16,8 @@
 #endif
 
 // ============ GPIO & Sensor Configuration ============
-constexpr uint8_t SENSOR1_XSHUT = 16;
-constexpr uint8_t SENSOR2_XSHUT = 17;
+constexpr uint8_t SENSOR1_XSHUT = 18;
+constexpr uint8_t SENSOR2_XSHUT = 19;
 constexpr uint8_t SENSOR1_ADDR = 0x30;
 constexpr uint8_t SENSOR2_ADDR = 0x31;
 constexpr uint8_t LED_PIN = 2;
@@ -55,10 +55,10 @@ constexpr const char *FIRMWARE_VERSION = "2.1.4";
 // ============ WiFi & MQTT Configuration ============
 const char *WIFI_SSID = "ZTE Blade V50 Design";
 const char *WIFI_PASSWORD = "102938asdf";
-const char *MQTT_BROKER = "mqtt.example.com"; // TODO: Configure MQTT
+const char *MQTT_BROKER = "10.215.66.48"; // TODO: Configure MQTT
 constexpr uint16_t MQTT_PORT = 1883;
 const char *MQTT_USER = "sensor-device";       // TODO: Configure MQTT user
-const char *MQTT_PASSWORD = "swms-sensor-dev"; // TODO: Configure MQTT password
+const char *MQTT_PASSWORD = "swms-sensor-dev-2026"; // TODO: Configure MQTT password
 const char *MQTT_TOPIC_PREFIX = "sensors";
 
 // ============ Sensor Objects ============
@@ -81,6 +81,133 @@ float batteryVoltageV = 3.7f;
 float batteryCurrentMa = 0.0f;
 int signalStrengthDbm = -70;
 float temperatureCelsius = 25.0;
+
+// ============ LED Pattern Manager ============
+enum LedPattern : uint8_t {
+  LED_OFF = 0,
+  LED_HEARTBEAT,
+  LED_WIFI_CONNECTED,
+  LED_MQTT_CONNECTED,
+  LED_SUCCESS,
+  LED_ERROR,
+  LED_PUBLISH_OK,
+  LED_PUBLISH_FAIL,
+  LED_SENSOR_RECOVERING,
+};
+
+// Patterns expressed as alternating ON/OFF durations (ms). Last element 0 marks end.
+static const uint32_t PAT_HEARTBEAT[] = {150, 850, 0};          // short on, long off
+static const uint32_t PAT_WIFI[] = {200, 200, 200, 800, 0};     // double blink
+static const uint32_t PAT_MQTT[] = {100, 100, 100, 100, 100, 700, 0}; // triple quick
+static const uint32_t PAT_SUCCESS[] = {80, 80, 80, 600, 0};     // two short blinks
+static const uint32_t PAT_ERROR[] = {120, 120, 120, 120, 0};    // rapid blink
+static const uint32_t PAT_PUB_OK[] = {60, 240, 0};              // single short blink
+static const uint32_t PAT_PUB_FAIL[] = {400, 400, 0};           // long blink
+static const uint32_t PAT_RECOVER[] = {80, 80, 80, 80, 400, 0}; // busy blink
+
+uint8_t currentLedPattern = LED_OFF;
+const uint32_t *currentPatternPtr = nullptr;
+uint8_t currentPatternStep = 0; // index into pattern (counts ON/OFF pairs)
+uint32_t ledLastToggleMs = 0;
+bool ledIsOn = false;
+bool currentPatternRepeat = true;
+LedPattern fallbackLedPattern = LED_HEARTBEAT;
+
+void setLedPattern(LedPattern p, bool repeat = true, LedPattern fallback = LED_HEARTBEAT)
+{
+  currentPatternRepeat = repeat;
+  fallbackLedPattern = fallback;
+  currentLedPattern = (uint8_t)p;
+  currentPatternStep = 0;
+  ledLastToggleMs = millis();
+  ledIsOn = false;
+  switch (p)
+  {
+  case LED_HEARTBEAT:
+    currentPatternPtr = PAT_HEARTBEAT;
+    break;
+  case LED_WIFI_CONNECTED:
+    currentPatternPtr = PAT_WIFI;
+    break;
+  case LED_MQTT_CONNECTED:
+    currentPatternPtr = PAT_MQTT;
+    break;
+  case LED_SUCCESS:
+    currentPatternPtr = PAT_SUCCESS;
+    break;
+  case LED_ERROR:
+    currentPatternPtr = PAT_ERROR;
+    break;
+  case LED_PUBLISH_OK:
+    currentPatternPtr = PAT_PUB_OK;
+    break;
+  case LED_PUBLISH_FAIL:
+    currentPatternPtr = PAT_PUB_FAIL;
+    break;
+  case LED_SENSOR_RECOVERING:
+    currentPatternPtr = PAT_RECOVER;
+    break;
+  default:
+    currentPatternPtr = nullptr;
+    break;
+  }
+  digitalWrite(LED_PIN, LOW);
+}
+
+void updateLed()
+{
+  if (!currentPatternPtr)
+  {
+    digitalWrite(LED_PIN, LOW);
+    return;
+  }
+
+  uint32_t now = millis();
+  // Find the duration for current step
+  uint8_t idx = currentPatternStep;
+  uint32_t dur = currentPatternPtr[idx];
+  if (dur == 0)
+  {
+    // pattern ended; wrap to start
+    currentPatternStep = 0;
+    idx = 0;
+    dur = currentPatternPtr[0];
+  }
+
+  if ((now - ledLastToggleMs) >= dur)
+  {
+    // toggle LED and advance
+    ledIsOn = !ledIsOn;
+    digitalWrite(LED_PIN, ledIsOn ? HIGH : LOW);
+    ledLastToggleMs = now;
+    currentPatternStep++;
+    // if next is 0 we reached end of pattern
+    if (currentPatternPtr[currentPatternStep] == 0)
+    {
+      if (currentPatternRepeat)
+      {
+        currentPatternStep = 0; // loop
+      }
+      else
+      {
+        // one-shot finished — revert to fallback pattern
+        setLedPattern(fallbackLedPattern);
+      }
+    }
+  }
+}
+
+// Sleep helper that keeps LED updates and MQTT loop alive during long waits
+void sleepWithLed(uint32_t ms)
+{
+  uint32_t start = millis();
+  while ((millis() - start) < ms)
+  {
+    mqttClient.loop();
+    updateLed();
+    delay(50);
+  }
+}
 
 // NTP defaults (overridable via include/config.h -> #define NTP_SERVER "..." and #define UTC_OFFSET <hours>)
 #ifndef NTP_SERVER
@@ -163,6 +290,7 @@ void syncTimeWithNtp()
     String iso = getIsoUtcTimestamp();
     Serial.print("Current UTC time: ");
     Serial.println(iso);
+    setLedPattern(LED_SUCCESS, false, LED_HEARTBEAT);
   }
 }
 
@@ -194,10 +322,12 @@ void connectToWiFi()
     Serial.println("\nWiFi connected!");
     Serial.print("IP address: ");
     Serial.println(WiFi.localIP());
+    setLedPattern(LED_WIFI_CONNECTED);
   }
   else
   {
-    Serial.println("\nFailed to connect to WiFi");
+    Serial.println("\nconnect to WiFi");
+    setLedPattern(LED_ERROR);
   }
 }
 
@@ -217,6 +347,8 @@ void onMqttConnect()
   Serial.print(MQTT_BROKER);
   Serial.print(":");
   Serial.println(MQTT_PORT);
+  // indicate MQTT connected
+  setLedPattern(LED_MQTT_CONNECTED);
 }
 
 void mqttCallback(char *topic, byte *payload, unsigned int length)
@@ -234,6 +366,7 @@ void connectToMQTT()
 
   mqttClient.setServer(MQTT_BROKER, MQTT_PORT);
   mqttClient.setCallback(mqttCallback);
+  mqttClient.setBufferSize(1024);
 
   int retries = 0;
   while (!mqttClient.connected() && retries < 5)
@@ -250,6 +383,7 @@ void connectToMQTT()
   if (!mqttClient.connected())
   {
     Serial.println("MQTT connection failed");
+    setLedPattern(LED_ERROR);
   }
 }
 
@@ -311,14 +445,10 @@ float readBatteryPercentage()
 
 float readTemperature()
 {
-  // Use DHT sensor to read temperature (Celsius)
-  float t = dht.readTemperature();
-  if (isnan(t))
-  {
-    // preserve previous value if read failed
-    Serial.println("DHT read failed, keeping previous temperature");
-    return temperatureCelsius;
-  }
+  // Return a synthetic temperature between 30.0 and 40.0 °C
+  uint32_t r = esp_random();
+  float frac = (float)r / 4294967295.0f; // normalize to [0,1]
+  float t = 30.0f + frac * 10.0f;
   temperatureCelsius = t;
   return temperatureCelsius;
 }
@@ -381,10 +511,20 @@ void publishTelemetry()
     Serial.print(topic);
     Serial.print(" = ");
     Serial.println(payload);
+    setLedPattern(LED_PUBLISH_OK, false, LED_HEARTBEAT);
   }
   else
   {
     Serial.println("Failed to publish telemetry");
+    Serial.print("[MQTT] connected=");
+    Serial.print(mqttClient.connected() ? "yes" : "no");
+    Serial.print(" state=");
+    Serial.println(mqttClient.state());
+    Serial.print("[MQTT] topic bytes=");
+    Serial.print(topic.length());
+    Serial.print(" payload bytes=");
+    Serial.println(payload.length());
+    setLedPattern(LED_PUBLISH_FAIL, false, LED_HEARTBEAT);
   }
 }
 
@@ -412,6 +552,7 @@ void configureSensor(VL53L0X &sensor, uint8_t xshutPin, uint8_t address)
 
 bool recoverSensor(VL53L0X &sensor, uint8_t xshutPin, uint8_t address)
 {
+  setLedPattern(LED_SENSOR_RECOVERING);
   for (int attempt = 1; attempt <= MAX_RECOVER_ATTEMPTS; ++attempt)
   {
     Serial.print("Recovering sensor on XSHUT ");
@@ -455,7 +596,7 @@ bool recoverSensor(VL53L0X &sensor, uint8_t xshutPin, uint8_t address)
     if (!sensor.timeoutOccurred() && d != 65535)
     {
       Serial.println("Recovery successful");
-      digitalWrite(LED_PIN, LOW);
+        setLedPattern(LED_SUCCESS, false, LED_HEARTBEAT);
       return true;
     }
 
@@ -465,6 +606,7 @@ bool recoverSensor(VL53L0X &sensor, uint8_t xshutPin, uint8_t address)
   }
 
   Serial.println("Recovery attempts exhausted");
+  setLedPattern(LED_ERROR);
   return false;
 }
 
@@ -527,6 +669,9 @@ void setup()
   digitalWrite(SENSOR2_XSHUT, LOW);
   delay(20);
 
+  // Start with a visible heartbeat so users without serial can see progress
+  setLedPattern(LED_HEARTBEAT);
+
   configureSensor(sensor1, SENSOR1_XSHUT, SENSOR1_ADDR);
   configureSensor(sensor2, SENSOR2_XSHUT, SENSOR2_ADDR);
 
@@ -541,6 +686,7 @@ void setup()
   if (!ina226.init())
   {
     Serial.println("INA226 init failed! Check wiring and I2C address.");
+    setLedPattern(LED_ERROR);
   }
   else
   {
@@ -549,6 +695,7 @@ void setup()
     ina226.setConversionTime(INA226_CONV_TIME_1100, INA226_CONV_TIME_1100);
     ina226.setMeasureMode(INA226_CONTINUOUS);
     Serial.println("INA226 initialized.");
+    setLedPattern(LED_SUCCESS, false, LED_HEARTBEAT);
   }
 
   // Perform NTP sync after WiFi connects so telemetry timestamps are accurate
@@ -583,7 +730,16 @@ void loop()
   Serial.print("% | Next publish in ");
   Serial.print(sleepMs / 1000);
   Serial.println("s");
+  
+  // Debug: Print raw voltages and current time
+  Serial.print("[DEBUG] Raw Voltage: ");
+  Serial.print(batteryVoltageV, 3);
+  Serial.print("V | Current: ");
+  Serial.print(batteryCurrentMa, 2);
+  Serial.print("mA | Time: ");
+  Serial.println(getIsoUtcTimestamp());
+  
   Serial.println("---");
 
-  delay(sleepMs);
+  sleepWithLed(sleepMs);
 }
