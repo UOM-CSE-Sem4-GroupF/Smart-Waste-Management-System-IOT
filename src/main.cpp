@@ -82,6 +82,20 @@ float batteryCurrentMa = 0.0f;
 int signalStrengthDbm = -70;
 float temperatureCelsius = 25.0;
 
+// ============ Telemetry Buffer (offline queue) ============
+constexpr uint8_t TELEMETRY_BUFFER_MAX = 30;
+
+struct BufferedTelemetryMessage
+{
+  String topic;
+  String payload;
+};
+
+BufferedTelemetryMessage telemetryBuffer[TELEMETRY_BUFFER_MAX];
+uint8_t telemetryBufferHead = 0;
+uint8_t telemetryBufferTail = 0;
+uint8_t telemetryBufferCount = 0;
+
 // ============ LED Pattern Manager ============
 enum LedPattern : uint8_t {
   LED_OFF = 0,
@@ -363,6 +377,51 @@ void reconnectMQTT()
   }
 }
 
+bool enqueueTelemetry(const String &topic, const String &payload)
+{
+  // Drop oldest if full so newest readings are preserved.
+  if (telemetryBufferCount >= TELEMETRY_BUFFER_MAX)
+  {
+    telemetryBufferHead = (telemetryBufferHead + 1) % TELEMETRY_BUFFER_MAX;
+    telemetryBufferCount--;
+  }
+
+  telemetryBuffer[telemetryBufferTail].topic = topic;
+  telemetryBuffer[telemetryBufferTail].payload = payload;
+  telemetryBufferTail = (telemetryBufferTail + 1) % TELEMETRY_BUFFER_MAX;
+  telemetryBufferCount++;
+  return true;
+}
+
+void flushBufferedTelemetry(uint8_t maxMessages = 5)
+{
+  if (!mqttClient.connected() || telemetryBufferCount == 0)
+  {
+    return;
+  }
+
+  uint8_t sent = 0;
+  while (telemetryBufferCount > 0 && sent < maxMessages)
+  {
+    BufferedTelemetryMessage &msg = telemetryBuffer[telemetryBufferHead];
+    if (!mqttClient.publish(msg.topic.c_str(), msg.payload.c_str(), true))
+    {
+      // Stop and retry later if broker publish fails again.
+      setLedPattern(LED_PUBLISH_FAIL, false, LED_HEARTBEAT);
+      break;
+    }
+
+    telemetryBufferHead = (telemetryBufferHead + 1) % TELEMETRY_BUFFER_MAX;
+    telemetryBufferCount--;
+    sent++;
+  }
+
+  if (sent > 0)
+  {
+    setLedPattern(LED_PUBLISH_OK, false, LED_HEARTBEAT);
+  }
+}
+
 // ============ Sensor Reading & Telemetry Functions ============
 uint16_t getAverageDistance()
 {
@@ -432,13 +491,13 @@ uint32_t calculatePublishIntervalMs(float fillPercentage)
   // Based on simulator: adaptive sleep reduces power drain when bin is mostly empty
   // Returns milliseconds to sleep before next publish
 
-  // if (fillPercentage < 50.0)
-  //   return 60000; // 10 minutes
-  // else if (fillPercentage < 75.0)
-  //   return 300000; // 5 minutes
-  // else if (fillPercentage < 90.0)
-  //   return 120000; // 2 minutes
-  // else
+  if (fillPercentage < 50.0)
+    return 60000; // 10 minutes
+  else if (fillPercentage < 75.0)
+    return 300000; // 5 minutes
+  else if (fillPercentage < 90.0)
+    return 120000; // 2 minutes
+  else
     return 5000; // 5 seconds (urgent)
 }
 
@@ -472,12 +531,13 @@ void publishTelemetry()
 
   String topic = String(MQTT_TOPIC_PREFIX) + "/bin/" + BIN_ID + "/telemetry";
 
-  if (mqttClient.publish(topic.c_str(), payload.c_str(), true))
+  if (mqttClient.connected() && mqttClient.publish(topic.c_str(), payload.c_str(), true))
   {
     setLedPattern(LED_PUBLISH_OK, false, LED_HEARTBEAT);
   }
   else
   {
+    enqueueTelemetry(topic, payload);
     setLedPattern(LED_PUBLISH_FAIL, false, LED_HEARTBEAT);
   }
 }
@@ -634,6 +694,9 @@ void loop()
     reconnectMQTT();
   }
   mqttClient.loop();
+
+  // If connectivity is back, drain buffered telemetry in small batches.
+  flushBufferedTelemetry(8);
 
   printAndMaybeRecover(sensor1, SENSOR1_XSHUT, SENSOR1_ADDR, "Sensor 1: ", sensor1Failures);
   printAndMaybeRecover(sensor2, SENSOR2_XSHUT, SENSOR2_ADDR, "Sensor 2: ", sensor2Failures);
