@@ -26,8 +26,8 @@ constexpr uint8_t LED_PIN = 2;
 constexpr uint8_t INA226_I2C_ADDR = 0x40;  // A0=GND, A1=GND (default)
 constexpr float SHUNT_RESISTOR_OHM = 0.1f; // 100 mΩ shunt resistor
 constexpr float MAX_EXPECTED_CURRENT_A = 1.0f;
-constexpr float BATTERY_FULL_V = 4.2f;  // 3.7V LiPo fully charged
-constexpr float BATTERY_EMPTY_V = 3.0f; // cut-off voltage
+constexpr float BATTERY_FULL_V = 8.4f;  // 3.7V LiPo fully charged
+constexpr float BATTERY_EMPTY_V = 6.0f; // cut-off voltage
 #ifndef DHT_PIN
 constexpr uint8_t DHT_SENSOR_PIN = 4; // fallback pin if not provided by config.h
 #else
@@ -46,7 +46,7 @@ constexpr int RECOVER_DELAY_MS = 200;
 constexpr int MAX_CONSECUTIVE_FAILURES = 3;
 
 // ============ Bin Configuration ============
-constexpr const char *BIN_ID = "BIN-EDGE-001";
+constexpr const char *BIN_ID = "BIN-011";
 constexpr uint8_t ZONE_ID = 1;
 constexpr const char *WASTE_CATEGORY = "general"; // food_waste, general, paper, plastic, glass
 constexpr uint16_t BIN_VOLUME_LITRES = 240;
@@ -55,7 +55,7 @@ constexpr const char *FIRMWARE_VERSION = "2.1.4";
 // ============ WiFi & MQTT Configuration ============
 const char *WIFI_SSID = "ZTE Blade V50 Design";
 const char *WIFI_PASSWORD = "102938asdf";
-const char *MQTT_BROKER = "10.215.66.48"; // TODO: Configure MQTT
+const char *MQTT_BROKER = "167.99.28.170"; // TODO: Configure MQTT
 constexpr uint16_t MQTT_PORT = 1883;
 const char *MQTT_USER = "sensor-device";       // TODO: Configure MQTT user
 const char *MQTT_PASSWORD = "swms-sensor-dev-2026"; // TODO: Configure MQTT password
@@ -263,33 +263,19 @@ String getIsoUtcTimestamp()
 
 void syncTimeWithNtp()
 {
-  Serial.print("Configuring NTP: ");
-  Serial.println(NTP_SERVER_STR);
   long gmtOffsetSec = (long)(UTC_OFFSET_HOURS * 3600);
   configTime(gmtOffsetSec, 0, NTP_SERVER_STR);
 
-  Serial.print("Waiting for NTP sync...");
   time_t now = time(nullptr);
   int attempts = 0;
   while (now < 24 * 3600 && attempts < 10)
   {
     delay(1000);
-    Serial.print('.');
     now = time(nullptr);
     attempts++;
   }
-  Serial.println();
-  if (now < 24 * 3600)
+  if (now >= 24 * 3600)
   {
-    Serial.println("NTP sync failed or time not yet set");
-  }
-  else
-  {
-    Serial.println("NTP time synchronized");
-    // Print the current ISO8601 UTC timestamp to the serial monitor
-    String iso = getIsoUtcTimestamp();
-    Serial.print("Current UTC time: ");
-    Serial.println(iso);
     setLedPattern(LED_SUCCESS, false, LED_HEARTBEAT);
   }
 }
@@ -304,29 +290,21 @@ void resetI2CBus()
 // ============ WiFi Functions ============
 void connectToWiFi()
 {
-  Serial.print("Connecting to WiFi: ");
-  Serial.println(WIFI_SSID);
-
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
 
   int retries = 0;
   while (WiFi.status() != WL_CONNECTED && retries < 20)
   {
     delay(500);
-    Serial.print(".");
     retries++;
   }
 
   if (WiFi.status() == WL_CONNECTED)
   {
-    Serial.println("\nWiFi connected!");
-    Serial.print("IP address: ");
-    Serial.println(WiFi.localIP());
     setLedPattern(LED_WIFI_CONNECTED);
   }
   else
   {
-    Serial.println("\nconnect to WiFi");
     setLedPattern(LED_ERROR);
   }
 }
@@ -335,7 +313,6 @@ void reconnectWiFi()
 {
   if (WiFi.status() != WL_CONNECTED)
   {
-    Serial.println("WiFi disconnected. Reconnecting...");
     connectToWiFi();
   }
 }
@@ -343,27 +320,19 @@ void reconnectWiFi()
 // ============ MQTT Functions ============
 void onMqttConnect()
 {
-  Serial.print("MQTT connected to ");
-  Serial.print(MQTT_BROKER);
-  Serial.print(":");
-  Serial.println(MQTT_PORT);
   // indicate MQTT connected
   setLedPattern(LED_MQTT_CONNECTED);
 }
 
 void mqttCallback(char *topic, byte *payload, unsigned int length)
 {
-  Serial.print("Message arrived on topic: ");
-  Serial.println(topic);
+  (void)topic;
+  (void)payload;
+  (void)length;
 }
 
 void connectToMQTT()
 {
-  Serial.print("Connecting to MQTT broker: ");
-  Serial.print(MQTT_BROKER);
-  Serial.print(":");
-  Serial.println(MQTT_PORT);
-
   mqttClient.setServer(MQTT_BROKER, MQTT_PORT);
   mqttClient.setCallback(mqttCallback);
   mqttClient.setBufferSize(1024);
@@ -382,7 +351,6 @@ void connectToMQTT()
 
   if (!mqttClient.connected())
   {
-    Serial.println("MQTT connection failed");
     setLedPattern(LED_ERROR);
   }
 }
@@ -391,7 +359,6 @@ void reconnectMQTT()
 {
   if (!mqttClient.connected())
   {
-    Serial.println("MQTT disconnected. Reconnecting...");
     connectToMQTT();
   }
 }
@@ -422,9 +389,9 @@ uint16_t getAverageDistance()
 float calculateFillPercentage(uint16_t distanceMm)
 {
   // TODO: Calibrate these values based on your bin dimensions
-  // For now: assume 0mm (full) = 0% and 240mm (empty) = 100%
-  const uint16_t EMPTY_DISTANCE_MM = 240; // distance when bin is empty
-  const uint16_t FULL_DISTANCE_MM = 0;    // distance when bin is full
+  // For now: assume 0mm (full) = 0% and 350mm (empty) = 100%
+  const uint16_t EMPTY_DISTANCE_MM = 350; // distance when bin is empty
+  const uint16_t FULL_DISTANCE_MM = 40;    // distance when bin is full
 
   if (distanceMm >= EMPTY_DISTANCE_MM)
     return 0.0; // Empty
@@ -465,14 +432,14 @@ uint32_t calculatePublishIntervalMs(float fillPercentage)
   // Based on simulator: adaptive sleep reduces power drain when bin is mostly empty
   // Returns milliseconds to sleep before next publish
 
-  if (fillPercentage < 50.0)
-    return 600000; // 10 minutes
-  else if (fillPercentage < 75.0)
-    return 300000; // 5 minutes
-  else if (fillPercentage < 90.0)
-    return 120000; // 2 minutes
-  else
-    return 30000; // 30 seconds (urgent)
+  // if (fillPercentage < 50.0)
+  //   return 60000; // 10 minutes
+  // else if (fillPercentage < 75.0)
+  //   return 300000; // 5 minutes
+  // else if (fillPercentage < 90.0)
+  //   return 120000; // 2 minutes
+  // else
+    return 5000; // 5 seconds (urgent)
 }
 
 // ============ Telemetry Publishing ============
@@ -507,23 +474,10 @@ void publishTelemetry()
 
   if (mqttClient.publish(topic.c_str(), payload.c_str(), true))
   {
-    Serial.print("Published: ");
-    Serial.print(topic);
-    Serial.print(" = ");
-    Serial.println(payload);
     setLedPattern(LED_PUBLISH_OK, false, LED_HEARTBEAT);
   }
   else
   {
-    Serial.println("Failed to publish telemetry");
-    Serial.print("[MQTT] connected=");
-    Serial.print(mqttClient.connected() ? "yes" : "no");
-    Serial.print(" state=");
-    Serial.println(mqttClient.state());
-    Serial.print("[MQTT] topic bytes=");
-    Serial.print(topic.length());
-    Serial.print(" payload bytes=");
-    Serial.println(payload.length());
     setLedPattern(LED_PUBLISH_FAIL, false, LED_HEARTBEAT);
   }
 }
@@ -538,7 +492,6 @@ void configureSensor(VL53L0X &sensor, uint8_t xshutPin, uint8_t address)
 
   if (!sensor.init())
   {
-    Serial.println("Failed to initialize ToF sensor");
     while (true)
     {
       delay(100);
@@ -555,11 +508,6 @@ bool recoverSensor(VL53L0X &sensor, uint8_t xshutPin, uint8_t address)
   setLedPattern(LED_SENSOR_RECOVERING);
   for (int attempt = 1; attempt <= MAX_RECOVER_ATTEMPTS; ++attempt)
   {
-    Serial.print("Recovering sensor on XSHUT ");
-    Serial.print(xshutPin);
-    Serial.print(" attempt ");
-    Serial.println(attempt);
-
     digitalWrite(LED_PIN, HIGH);
 
     // Reset the I2C bus and force this sensor back through startup.
@@ -581,7 +529,6 @@ bool recoverSensor(VL53L0X &sensor, uint8_t xshutPin, uint8_t address)
     // Try to (re)initialize
     if (!sensor.init())
     {
-      Serial.println("init() failed during recovery");
       digitalWrite(LED_PIN, LOW);
       delay(RECOVER_DELAY_MS);
       continue;
@@ -595,17 +542,14 @@ bool recoverSensor(VL53L0X &sensor, uint8_t xshutPin, uint8_t address)
     uint16_t d = sensor.readRangeContinuousMillimeters();
     if (!sensor.timeoutOccurred() && d != 65535)
     {
-      Serial.println("Recovery successful");
         setLedPattern(LED_SUCCESS, false, LED_HEARTBEAT);
       return true;
     }
 
-    Serial.println("Still timing out after reinit");
     digitalWrite(LED_PIN, LOW);
     delay(RECOVER_DELAY_MS);
   }
 
-  Serial.println("Recovery attempts exhausted");
   setLedPattern(LED_ERROR);
   return false;
 }
@@ -621,26 +565,15 @@ void printAndMaybeRecover(VL53L0X &sensor, uint8_t xshutPin, uint8_t address, co
   if (isSensorReadingValid(sensor, distance))
   {
     failureCount = 0;
-    Serial.print(label);
-    Serial.print(distance);
-    Serial.println(" mm");
     return;
   }
 
   ++failureCount;
-  Serial.print(label);
-  Serial.print("fault (read=");
-  Serial.print(distance);
-  Serial.print(", failures=");
-  Serial.print(failureCount);
-  Serial.println(")");
-
   if (failureCount < MAX_CONSECUTIVE_FAILURES)
   {
     return;
   }
 
-  Serial.println("Attempting sensor recovery");
   if (recoverSensor(sensor, xshutPin, address))
   {
     failureCount = 0;
@@ -649,15 +582,7 @@ void printAndMaybeRecover(VL53L0X &sensor, uint8_t xshutPin, uint8_t address, co
 
 void setup()
 {
-  Serial.begin(115200);
   delay(1000);
-  Serial.println("\n\n=== SWMS Edge Device Starting ===\n");
-  esp_reset_reason_t reason = esp_reset_reason();
-  Serial.print("Reset reason: ");
-  Serial.print(static_cast<int>(reason));
-  Serial.print(" (");
-  Serial.print(resetReasonToString(reason));
-  Serial.println(")");
 
   Wire.begin();
 
@@ -675,8 +600,6 @@ void setup()
   configureSensor(sensor1, SENSOR1_XSHUT, SENSOR1_ADDR);
   configureSensor(sensor2, SENSOR2_XSHUT, SENSOR2_ADDR);
 
-  Serial.println("Two ToF sensors initialized.");
-
   connectToWiFi();
 
   // Initialize DHT sensor
@@ -685,7 +608,6 @@ void setup()
   // Initialize INA226 power monitor
   if (!ina226.init())
   {
-    Serial.println("INA226 init failed! Check wiring and I2C address.");
     setLedPattern(LED_ERROR);
   }
   else
@@ -694,7 +616,6 @@ void setup()
     ina226.setAverage(INA226_AVERAGE_16);
     ina226.setConversionTime(INA226_CONV_TIME_1100, INA226_CONV_TIME_1100);
     ina226.setMeasureMode(INA226_CONTINUOUS);
-    Serial.println("INA226 initialized.");
     setLedPattern(LED_SUCCESS, false, LED_HEARTBEAT);
   }
 
@@ -702,8 +623,6 @@ void setup()
   syncTimeWithNtp();
 
   connectToMQTT();
-
-  Serial.println("Setup complete!\n");
 }
 
 void loop()
@@ -722,24 +641,6 @@ void loop()
   publishTelemetry();
 
   uint32_t sleepMs = calculatePublishIntervalMs(currentFillPercentage);
-
-  Serial.print("Fill: ");
-  Serial.print(currentFillPercentage, 1);
-  Serial.print("% | Battery: ");
-  Serial.print(batteryPercentage, 1);
-  Serial.print("% | Next publish in ");
-  Serial.print(sleepMs / 1000);
-  Serial.println("s");
-  
-  // Debug: Print raw voltages and current time
-  Serial.print("[DEBUG] Raw Voltage: ");
-  Serial.print(batteryVoltageV, 3);
-  Serial.print("V | Current: ");
-  Serial.print(batteryCurrentMa, 2);
-  Serial.print("mA | Time: ");
-  Serial.println(getIsoUtcTimestamp());
-  
-  Serial.println("---");
 
   sleepWithLed(sleepMs);
 }
